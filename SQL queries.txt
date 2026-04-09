@@ -1,0 +1,214 @@
+--Top 5 Batsman
+SELECT *
+FROM (
+    SELECT
+        d.batter AS player_name,
+        p.team_name,
+        SUM(d.batsman_runs) AS total_runs
+    FROM
+        delivery d
+    JOIN
+        player p ON d.batter = p.player_name
+    GROUP BY
+        d.batter, p.team_name
+    ORDER BY
+        total_runs DESC
+)
+WHERE ROWNUM <= 5;
+
+
+--Players Batting Stat
+
+WITH player_match_scores AS (
+    SELECT 
+        match_no,
+        batter,
+        SUM(batsman_runs) AS match_runs,
+        COUNT(CASE WHEN extra_type IS NULL THEN 1 END) AS match_balls
+    FROM delivery
+    GROUP BY match_no, batter
+),
+aggregated AS (
+    SELECT 
+        batter,
+        SUM(match_runs) AS total_runs,
+        SUM(match_balls) AS balls_faced,
+        COUNT(CASE WHEN match_runs >= 50 AND match_runs < 100 THEN 1 END) AS fifties,
+        COUNT(CASE WHEN match_runs >= 100 THEN 1 END) AS hundreds
+    FROM player_match_scores
+    GROUP BY batter
+)
+SELECT 
+    batter,
+    total_runs,
+    balls_faced,
+    ROUND(total_runs * 100.0 / NULLIF(balls_faced, 0), 2) AS strike_rate,
+    fifties,
+    hundreds
+FROM aggregated
+ORDER BY total_runs DESC;
+
+
+
+--Top 5 Bowler
+
+SELECT * FROM (SELECT d.bowler AS player_name, p.team_name, COUNT(DISTINCT w.wicket_id) AS total_wickets
+    FROM wickets w JOIN delivery d ON w.delivery_delivery_id = d.delivery_id JOIN player p ON d.bowler = p.player_name
+    WHERE w.dismissal_kind IS NOT NULL
+    AND w.dismissal_kind NOT IN ('run out', 'retired hurt', 'obstructing the field')
+    GROUP BY d.bowler, p.team_name
+    ORDER BY total_wickets DESC)
+WHERE ROWNUM <= 5;
+
+
+
+--Player with the most POTM
+
+SELECT *FROM (SELECT mrd.player_of_the_match AS player_name, p.team_name, COUNT(*) AS awards
+    FROM match_result_details mrd JOIN player p ON mrd.player_of_the_match = p.player_name
+    GROUP BY mrd.player_of_the_match, p.team_name
+    ORDER BY awards DESC)
+WHERE ROWNUM <= 5;
+
+
+
+--Most Sixes Hit by Players(Top 5)
+
+SELECT d.batter AS player_name, p.team_name, COUNT(*) AS number_of_sixes
+FROM delivery d
+JOIN player p ON d.batter = p.player_name
+WHERE d.batsman_runs = 6
+GROUP BY d.batter, p.team_name
+ORDER BY number_of_sixes DESC
+FETCH FIRST 5 ROWS ONLY;
+
+
+
+--Team with Highest Winning Percentage
+
+SELECT t.team_name,
+    COUNT(DISTINCT mtd.match_no) AS matches_played,
+    COUNT(DISTINCT CASE WHEN mrd.match_winner = t.team_name THEN mrd.match_no END) AS matches_won,
+    ROUND(
+        (COUNT(DISTINCT CASE WHEN mrd.match_winner = t.team_name THEN mrd.match_no END) 
+        / COUNT(DISTINCT mtd.match_no)) * 100, 2
+    ) AS win_percentage FROM team t JOIN match_team_detail mtd 
+    ON t.team_name = mtd.team_name_1 OR t.team_name = mtd.team_name_2 
+    LEFT JOIN match_result_details mrd ON mrd.match_no = mtd.match_no
+GROUP BY t.team_name
+ORDER BY win_percentage DESC;
+
+
+
+--Point Table
+
+
+WITH AllMatches AS (
+    SELECT Match_No, Team_Name_1 AS Team_Name FROM Match_Team_Detail
+    UNION ALL
+    SELECT Match_No, Team_Name_2 AS Team_Name FROM Match_Team_Detail
+)
+SELECT
+    T.Team_Name,
+    COUNT(AM.Match_No) AS Matches_Played,
+    SUM(CASE WHEN MRD.Match_Winner = T.Team_Name THEN 1 ELSE 0 END) AS Wins,
+    SUM(CASE WHEN MRD.Match_Winner != T.Team_Name THEN 1 ELSE 0 END) AS Losses,
+    SUM(CASE WHEN MRD.Match_Winner = T.Team_Name THEN 2 ELSE 0 END) AS Points
+FROM
+    Team T
+    JOIN AllMatches AM ON T.Team_Name = AM.Team_Name
+    JOIN Match_Result_Details MRD ON AM.Match_No = MRD.Match_No
+GROUP BY
+    T.Team_Name
+ORDER BY
+    Points DESC, Wins DESC;
+
+
+
+--Chased Target More than 180 by Teams
+
+
+SELECT 
+    m.match_no,
+    m."Date" AS match_date,
+    m.match_type,
+    mtd.team_name_1,
+    mtd.team_name_2,
+    mrd.toss_winner,
+    mtd.toss_decision,
+    mrd.target,
+    mrd.match_winner AS chasing_team,
+    mrd."Win_By(Runs/Wickets)" AS win_type,
+    mrd.result_margin
+FROM match m
+INNER JOIN match_team_detail mtd ON m.match_no = mtd.match_no
+INNER JOIN match_result_details mrd ON m.match_no = mrd.match_no
+WHERE TO_NUMBER(mrd.target) > 180
+AND UPPER(TRIM(mrd."Win_By(Runs/Wickets)")) = 'WICKETS'
+AND mrd.match_winner IS NOT NULL
+ORDER BY mrd.target DESC, m."Date" DESC;
+
+
+
+
+--Highest Team Total
+
+
+SELECT 
+    CASE 
+        WHEN i.inning_no = 1 THEN mtd.team_name_1
+        WHEN i.inning_no = 2 THEN mtd.team_name_2
+        ELSE 'Unknown'
+    END AS team_name,
+    i.match_no,
+    i.total_runs
+FROM 
+    innings i
+    INNER JOIN match_team_detail mtd ON i.match_no = mtd.match_no
+WHERE 
+    i.total_runs IS NOT NULL
+    AND i.total_runs > 0
+    
+ORDER BY 
+    i.total_runs DESC;
+
+
+
+--Toss Decisions Impact on Result
+
+
+SELECT mtd.toss_decision, COUNT(*) as total_matches,
+    SUM(CASE WHEN mrd.toss_winner = mrd.match_winner THEN 1 ELSE 0 END) as toss_winner_also_match_winner,
+    ROUND(
+        (SUM(CASE WHEN mrd.toss_winner = mrd.match_winner THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 
+        2) as win_percentage,
+    SUM(CASE WHEN mrd.toss_winner != mrd.match_winner THEN 1 ELSE 0 END) as toss_winner_lost_match
+FROM match_team_detail mtd
+JOIN match_result_details mrd ON mtd.match_no = mrd.match_no
+WHERE mtd.toss_decision IS NOT NULL
+GROUP BY mtd.toss_decision
+ORDER BY win_percentage DESC;
+
+
+
+--Venues with the Highest Batting Avg
+
+
+SELECT 
+    v.venue_name,
+    v.city,
+    COUNT(DISTINCT m.match_no) as total_matches,
+    SUM(i.total_runs) as total_runs_scored,
+    ROUND(AVG(i.total_runs), 2) as average_runs_per_innings,
+    ROUND(SUM(i.total_runs) / COUNT(DISTINCT m.match_no), 2) as average_runs_per_match,
+    MAX(i.total_runs) as highest_innings_score,
+    MIN(i.total_runs) as lowest_innings_score
+FROM venue v
+JOIN match m ON v.venue_name = m.venue_name
+JOIN innings i ON m.match_no = i.match_no
+WHERE i.total_runs IS NOT NULL
+GROUP BY v.venue_name, v.city
+HAVING COUNT(DISTINCT m.match_no) > 0
+ORDER BY average_runs_per_innings DESC;
+
+
